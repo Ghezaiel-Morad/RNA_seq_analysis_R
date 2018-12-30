@@ -1,0 +1,685 @@
+---
+title: "Statistical analysis of Chronic myelomonocytic leukaemia (CMML) RNA-seq data  "
+author: "GHEZAIEL Morad M2 Bioinformatique"
+date: "25 décembre 2018 : Joyeuses fêtes"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+```
+
+```{r eval=FALSE, include=FALSE}
+# Packages installation
+install.packages("R.utils",repos = "http://cran.us.r-project.org")
+if(!require("plyr")){
+  source("http://bioconductor.org/biocLite.R")
+  biocLite("plyr")  
+}
+#if(!require("ggplot2"))
+if(!require("affy")){
+  source("http://bioconductor.org/biocLite.R")
+  biocLite("affy")  
+}
+if(!require("gplots")){
+  install.packages("gplots")
+}
+if(!require("gProfileR")){
+  install.packages("gProfileR")
+}
+if(!require("DESeq2")){
+  install.packages("lazyeval",repos="http://cran.us.r-project.org")
+  install.packages("ggplot2",repos = "http://cran.us.r-project.org")
+  
+  source("http://bioconductor.org/biocLite.R")
+  biocLite("DESeq2")
+}
+
+```
+
+```{r include=FALSE}
+
+# Packages loading
+source("http://bioconductor.org/biocLite.R")
+library("ggplot2")
+library("lazyeval")
+if(!require("backports")){
+  install.packages("backports",repos = "http://cran.us.r-project.org")
+  library("backports")
+}
+
+library("DESeq2")
+install.packages("R.utils",repos = "http://cran.us.r-project.org")
+
+library("R.utils")
+library("knitr")
+if(!require("affy")){
+  source("http://bioconductor.org/biocLite.R")
+  biocLite("affy")  
+}
+library(affy)
+library("affy")
+library("gplots")
+library("R.utils")
+library("gProfileR")
+
+
+library("DESeq2")
+library("biomaRt")
+
+```
+
+
+# Introduction 
+
+
+Chronic myelomonocytic leukemia syndrome (CMML) is characterized by a deregulation of hematopoiesis and is associated with high number of monocytes and immature blood cell in bone marrow and peripheral blood. According to the American Cancer Society (ACS), CMML is a rare disease affecting people that are 60 and older and is about twice common in men as in women. Molecularly, cases have been shown to display abberant DNA methylation and mutation in epigenetic modifiers. In that way, an antineoplastic compound named decitabine is used as a chemotherapy drug to treat affected patient that have not followed a standard induction chemotherapy. This protocol relies on taking advantage of its demethylating activity and induction of differentiation. However, even if this drug have shown an important medical benefits (SMR) according to the French high sanitary authority (HAS), highly variables responses have been observed among the patients. In that way, a team of researchers have discovered that responses to decitabine are associated with specific molecular signatures. Using the same dataset, we will try to reproduce their results in a first hand and assess in a second hand whether an association exists between DE genes in non responders and target genes that have been shown to be affected by drug candidates of interest.
+
+
+# Material and methods
+
+
+Human mRNA profiling of bone marrow mononuclear cells from responder (n=8) and non responder (n=6) to decitabine was performed using an Illumina HIseq 2000. Counts datasets and experimental design are available in the NCBI Sequecing Read Archive (SRA) here. Descriptive statistics will be computed from scratch. Normalisation for sequencing depth adjustment as well as differential expression analysis will be performed using the DESeq2 package on quality controlled data (dropout filtering). Binomial fitted data will be submitted to a wald test for differential expression multitesting and corrected using false discovery rates (FDR) by following the Benjamini Hocheberg procedure. Gene selection on differentially expressed genes (DEG) will be applied using a two log2(fold change) criterion. Hierarchical clustering will be performed before and after normalization/gene selection. For functional enrichement analysis, genes identifiers will be converted to hgnc symbols using the biomart package prior to functional profiling with the gprofileR package with following parameters (hierarchichal filter = strong, correction method = FDR, max p value = 0.001). Plots and tables will be drawn using either the standard implementation or the ggplot2 package. Finally, a Chi squared test with 1 degree of freedom will be applied on compound specific genesets to test their associations with.
+
+```{r include=FALSE}
+# We creates directories that will contain our data and results
+getwd()
+work.dir <- file.path(getwd(),"STAT3_M2_DLAD_GHEZAIEL")
+data.dir <- file.path(work.dir,"Data")
+results.dir <- file.path(work.dir,"Results")
+tables.dir <- file.path(work.dir,"Tables")
+
+# If they do not exist, we create them
+if (file.exists(work.dir)){
+    setwd(work.dir)
+} else {
+    dir.create(file.path(work.dir))
+    dir.create(file.path(data.dir))
+    dir.create(file.path(results.dir))
+    dir.create(file.path(tables.dir))
+    setwd(work.dir)
+}
+
+```
+
+
+```{r include=FALSE}
+## Import count data
+data.path <- file.path(data.dir,"exp_matrix.txt.gz")
+
+# Get the zipped file from url
+if (!file.exists(data.path)){
+    data.gz <- "https://github.com/dputhier/SAOD---Statistical-analysis-of-omics-data/raw/gh-pages/examens/2018_stat3/exp_matrix.txt.gz"
+    
+    download.file(data.gz,destfile = data.path )
+}
+
+# Uncompress the text file 
+R.utils::gunzip(data.path,file.path(data.dir,"exp_matrix.txt"))
+data.path <- file.path(data.dir,"exp_matrix.txt")
+
+# Store it in a dataframe
+data<- data.frame(read.table(data.path,header = TRUE))
+
+```
+
+
+```{r include=FALSE}
+# Import experimental design (conditions)
+pheno.url <- "https://raw.githubusercontent.com/dputhier/SAOD---Statistical-analysis-of-omics-data/gh-pages/examens/2018_stat3/pheno_data.txt"
+pheno.path <- file.path(data.dir,"phenoData.txt")
+download.file(pheno.url,destfile =pheno.path)
+
+# Then we read each lines of the phenotype file 
+pheno.data <- readLines(con=pheno.path)
+
+# And store these information in a dataframe
+pheno.data <- data.frame(do.call(rbind, strsplit(pheno.data[2:length(pheno.data)], split="\t")))
+
+# We change the name of the columns 
+colnames(pheno.data) <- c("Samples","Phenotype") 
+
+# And define colors in order to discriminate phenotypes in further representations
+col.Phenotype <- c("response to decitabine: responder"="blue","response to decitabine: non-responder"="gray") 
+pheno.data$color <- col.Phenotype[as.vector(pheno.data$Phenotype)]
+
+```
+
+# Descriptive statistics
+
+
+A first way to investigate the aspect of our data is to draw an histogram of the gene frequency by counts number.
+
+```{r}
+# We compute the dimension of our dataframe
+n.genes <- dim(data)[1] # we can use nrow/ncol
+n.samples <- dim(data)[2]
+
+# And display it 
+message("number of reads = " ,n.genes ,"\n","number of samples = ",n.samples)
+
+```
+
+```{r include=FALSE}
+# And create a second dataframe that contain statistics for each
+stats.per.sample <- data.frame(t(do.call(cbind, lapply(data[2:length(data)], summary))))
+
+# In the same manneer, we add new cols (percentiles) on our dataframe
+stats.per.sample$libsum <- apply(data[2:length(data)], 2, sum) ## libsum
+stats.per.sample$perc05 <- apply(data[2:length(data)], 2, quantile, 0.05)
+stats.per.sample$perc10 <- apply(data[2:length(data)], 2, quantile, 0.10)
+stats.per.sample$perc90 <- apply(data[2:length(data)], 2, quantile, 0.90)
+stats.per.sample$perc95 <- apply(data[2:length(data)], 2, quantile, 0.95)
+stats.per.sample$zeros <- apply(data[2:length(data)]==0, 2, sum)
+stats.per.sample$percent.zeros <- 100*stats.per.sample$zeros/nrow(data)
+
+# Then, we display the statistics dataframe as a table 
+raw.stats <-knitr::kable(stats.per.sample[sample(1:ncol(data), size = 10),],
+      caption = "**Table: statistics per sample. ")
+write(raw.stats,file.path(tables.dir,"raw_stats.txt"))
+
+```
+
+```{r echo=FALSE}
+par(mfrow=c(3,1))
+# We first compute count frequencies for the whole dataset
+hist(as.matrix(data[2:length(data)]), col="blue", border="white", breaks=50, main="Counts per gene",xlab="Counts",ylab="Number of genes")
+# Same on a truncated count axis
+hist(as.matrix(data[2:length(data)]), col="blue", border="white",
+     breaks=1000000, xlim=c(0,7000), main="Counts per gene",
+     xlab="Counts (truncated axis)", ylab="Number of genes", 
+     las=2, cex.axis=0.7)
+
+# We proceed to log transformation of our data in order to normalize the dataset and reduce count dispersion 
+epsilon <- 1 # Log(0) is infinite
+hist(as.matrix(log2(data[2:length(data)] + epsilon)), breaks=20, col="blue", border="white",
+     main="Log2-transformed counts per gene", xlab="log2(counts+1)", ylab="Number of genes", 
+     las=1, cex.axis=0.7)
+```
+
+As we can see, the count distribution appear to be zero inflated (upper panel) even if we draw the histogram on a truncated axis (middle panel). This observation can be imputed to biases in sequencing depth or biological variability such as lowly expressed genes or high dispersion in gene expression. A good way to deal with this is to perform log2 transformation of counts in order to project the data in the log range. In that way, we reduce data variability and make it following a  normal distribution. Because of the fact that log(0) is equal to infinite, we can define a pseudo count by adding an epsilon factor (= 1). The importance of log transformation is double: first normalizing our data permits to proceed to statistical tests that need normal distribution as assumptions. In a second hand, correcting zero counts by adding a pseudo count is important for downstream analysis involving unsupervised algorithm such as principal component analysis (this method cannot handle zero values).
+
+
+```{r include=FALSE}
+# Statistics visualization 
+
+# Define a stat function
+stats <- function(data,title)
+{
+# Boxplots
+boxplot(log2(data[2:length(data)] + epsilon), col=pheno.data$color, pch=".", 
+        horizontal=TRUE, cex.axis=0.5,
+        las=1, ylab=" ", xlab="log2(Counts +1)",main=paste("Boxplot of log2(counts)",title,sep= " "))
+  
+# Density plots
+affy::plotDensity(log2(data[2:length(data)] + epsilon), lty=1, col=pheno.data$color, lwd=2,main = paste("Density plot of log2(counts)",title,sep= " "),ylab="Frequency",xlab="log2(counts+1)")
+grid()
+legend("topright", legend=names(col.Phenotype), col=col.Phenotype, lwd=2)
+}
+
+```
+
+# Quality control 
+
+
+Quality control is an important part of the RNA-seq data processing since it allows to filter our data by removing genes with null values for the whole sample set. 
+
+```{r echo=FALSE}
+# We store sample names
+sample.name=colnames(data[2:length(data)])
+
+# We check data stats before zero filtering
+stats(data,"before zero filtering")
+
+```
+
+Boxplot of read counts by sample before zero filtering indicate that two samples (from non responder individuals) have a quasi null median value (first panel). This observation could be inherent to the zero inflated aspect of our dataset observed previOusly. The density plot supports this hypothesis (second panel). 
+
+
+```{r echo=FALSE}
+# We correct the dataframe structure
+labels <- R.utils::insert(c(pheno.data$Phenotype),1,"Genes/Samples")
+
+# And change colnames as phenotypes : 1 for non responder, 2 for responder
+#names(data)<-labels
+#print(labels)
+
+# We compute percentage of null genes by sample
+zero <- apply(data[2:n.samples]==0, 2, sum)
+
+message("Dimension of the unfiltered dataframe = ",dim(data)[1]," ",dim(data)[2])
+null.perc <- as.data.frame(100*zero/n.genes)
+null.perc <- null.perc[1:14,]
+# And draw a barplot of null gene percentage per sample
+ggplot(data=as.data.frame(null.perc), aes(x=sample.name[1:14], y=null.perc)) +
+  geom_bar(stat="identity", color="steelblue", fill=pheno.data$color)+ggtitle("Percentage of null gene by sample")+coord_flip()+xlab("Samples")+ylab("Null percentage")
+
+```
+
+Drawing a barplot of the null count percentage by samples indicate an average of 45% of null counts by sample. 
+
+```{r echo=FALSE}
+# We bind the total to the df
+data$total.per.gene <-rowSums(data[2:length(data)])
+
+# We select dropout rows (gene with 0 count for each samples)
+dropout <- which(data$total.per.gene==0)
+
+# And remove it from the dataframe
+data <- data[-c(dropout),]
+message("Percentage dropout = ",100*(length(dropout))/n.genes," %","\nDimension of the unfiltered dataframe = ",dim(data)[1]," ",dim(data)[2])
+data$total.per.gene <- NULL
+# Finally we check the data stats
+stats(data,"after zero filtering")
+
+# And write the filtered data locally
+write.csv(t(data),"filtered_data.csv")
+```
+
+Finally, filtering zero genes allows to increase inter samples homogeneity by making their median values more closer. Consistenly, it increases the density of the normal distribution by reducing the density of the zero inflated peak. 
+
+# Hierarchical clustering on raw datas
+
+
+Proceeding to hierarchical clustering allows us to identify samples that are close to each other by computing euclidean distance between samples in the counts space. Our set being composed of responders and non responders to decitabine treatment, we aim to group them by phenotype. 
+
+```{r echo=FALSE, message=FALSE, warning=FALSE, paged.print=FALSE}
+
+# We clean unused memory
+remove(dropout)
+remove(weighted.perc.zero,zero.stat.per.gene)
+names(data)<-labels
+# And transpose the matrix for distance calculation
+data.t <- data.frame(t(data[2:length(data)]))
+
+# We create distance matrix using euclidean distance
+dists <- dist(data.t, method="euclidean")
+
+# And compute the dendrogram
+hcl <- hclust(dists, method = "ward")
+remove(data.dist,data.t)
+
+# Plot
+plot(hcl, main  ="Hierarchical clustering before gene selection",ylab="Euclidean distance")
+
+
+
+
+```
+
+
+The obtained dendrogram shows us that non responders tend to group each other with 83 % accuracy while non responders are grouping with 75% accuracy. In the next step, we will compare the same hierarchical clustering but after having proceeded to normalisation and gene selection
+
+# Normalization 
+
+
+Normalization is a procedure that aims to correct technical biases that may alter downstream analysis such as intra or inter sample comparaison for DEA. In that way, several normalization methods could be used depending on the bias (sequence depth, multihits, RNA composition). Wanting to compare samples from 2 conditions (responders vs non responders) we will take advantage of the DESeq2 library to proceed to median of ratio normalization. This method relies on scaling samples according to a sample specific size factors. These factors are obtained by calculating ratios between gene counts and geometric mean per gene and by taking the median value. 
+
+
+```{r echo=FALSE, message=FALSE, warning=FALSE, paged.print=FALSE}
+
+# We pass our geneset and experimental design to a DESeq function in order to create a DESeq specific dataset
+names(data)<-labels
+dds0 <- DESeqDataSetFromMatrix(countData = data[2:length(data)], colData = pheno.data, design = ~ Phenotype)
+
+# We make sure that rownames are conserved
+rownames(dds0)<-data[,1]
+
+# And compute size factors between samples for normalization
+dds.norm <- estimateSizeFactors(dds0)
+remove(dds0)
+# We can also display these factors
+sizeFactors(dds.norm)
+
+# We display statistics before and after normalization
+par(mfrow=c(2,2),cex.lab=0.7)
+
+boxplot(log2(counts(dds.norm)+epsilon),  col=pheno.data$color, cex.axis=0.7, 
+        las=1, xlab="log2(counts)", horizontal=TRUE, main="Raw counts")
+boxplot(log2(counts(dds.norm, normalized=TRUE)+epsilon),  col=pheno.data$color, cex.axis=0.7, 
+        las=1, xlab="log2(normalized counts)", horizontal=TRUE, main="Normalized counts") 
+plotDensity(log2(counts(dds.norm)+epsilon),  col=pheno.data$color, 
+            xlab="log2(counts+1)", cex.lab=0.7) 
+plotDensity(log2(counts(dds.norm, normalized=TRUE)+epsilon), col=pheno.data$color, 
+            xlab="log2(normalized (counts+1)", cex.lab=0.7)
+
+```
+
+Boxplots indicate that median values are closer to each other after normalization. In the same way, the density plot appear smoother for genes with high log2(count) values (15 to 20). We can now proceed to differential expression analysis.
+
+# Differential expression analysis (DGEA)
+
+
+Normalisation allowed us to make our samples more related in their distribution. This part was an important prior for DGEA
+
+```{r echo=FALSE}
+
+# We compute mean and variance of our normalized dataset
+norm.counts <- counts(dds.norm, normalized=TRUE)
+mean.counts <- rowMeans(norm.counts)
+variance.counts <- apply(norm.counts, 1, var)
+
+# And compute a new statistics summary 
+norm.counts.stats <- data.frame(
+  min=apply(norm.counts, 2, min),
+  mean=apply(norm.counts, 2, mean),
+  median=apply(norm.counts, 2, median),
+  max=apply(norm.counts, 2, max),
+  zeros=apply(norm.counts==0, 2, sum),
+  percent.zeros=100*apply(norm.counts==0, 2, sum)/nrow(norm.counts),
+  perc05=apply(norm.counts, 2, quantile, 0.05),
+  perc10=apply(norm.counts, 2, quantile, 0.10),
+  perc90=apply(norm.counts, 2, quantile, 0.90),
+  perc95=apply(norm.counts, 2, quantile, 0.95)
+)
+
+knitr::kable(norm.counts.stats)
+
+```
+
+DGEA is performed by estimating parameters of a distribution law using our datas, in order to fit it with them. In that way, we could assess the fold change of DE gene using a statistical test.
+
+Theoretically, RNA seq counts follow a Poisson distribution. However, several technical and biological biases may alter it. To investigate whether our data follow a Poisson distribution, we draw a MV plot (variance=f(mean)) to compare it to the theorical mean variance relationship of Poisson distribution (y=x).
+
+```{r}
+## Theoretically, RNA seq counts follow a poisson distribution.
+## However, several technical and biological biases may alter it.
+## We first investigate mean and variance relationship
+
+mean.var.col <- densCols(x=log2(mean.counts), y=log2(variance.counts))
+
+plot(x=log2(mean.counts), y=log2(variance.counts), pch=16, cex=0.5, 
+     col=mean.var.col, main="Mean-variance relationship",
+     xlab="Mean log2(normalized counts) per gene",
+     ylab="Variance of log2(normalized counts)",
+     panel.first = grid(),xlim=c(0,30),ylim=c(0,60))
+abline(a=0, b=1, col="black") # and draw the theoric MV poisson relationship
+
+
+```
+
+Results shown above support a non linear relationship between mean and variance. Consequently, we choose to fit a negative binomial model of distribution with our data. For this task, we must estimate dispersion parameters.
+
+```{r echo=FALSE, message=FALSE, warning=FALSE, paged.print=FALSE}
+## If the MV plot display a non linear relationship, one could consider to proceed
+## To a binomial fitting (rather than a poisson fitting)
+## For this task, we must estimate dispersion parameters
+
+# Performing estimation of dispersion parameter
+dds.disp <- estimateDispersions(dds.norm)
+
+
+## A diagnostic plot which
+## shows the mean of normalized counts (x axis)
+## and dispersion estimate for each genes
+plotDispEsts(dds.disp)
+
+
+```
+
+As we can see, fitting our distribution model with our data increases lowly expressed counts dispersion, making them more discriminative for DGEA. Having fitted our data to a negative binomial distribution, we can proceed to 
+a statistical test in order to compare fold changes in gene expression.
+
+```{r echo=FALSE, message=FALSE, warning=FALSE, paged.print=FALSE}
+## Having fitted our data to a negative binomial distribution, we can proceed to 
+## a statistical test in order to compare difference in expression values
+
+# We set an alpha for pvalue adjustment
+alpha <- 0.0001
+
+# And proceed to statistical inference of binomial parameter using a Wald-test
+wald.test <- nbinomWaldTest(dds.disp)
+remove(dds.disp)
+
+# We select the most DE genes by correcting the multitesting with FDR following the 
+# Benjamini-Hochberg procedure.
+res.DESeq2 <- results(wald.test, alpha=alpha, pAdjustMethod="BH")
+
+# We order the results by increasing p_values
+res.DESeq2 <- res.DESeq2[order(res.DESeq2$padj),]
+
+# And write a table of the results
+DESeq2.res <- knitr::kable(res.DESeq2)
+write(DESeq2.res,file.path(results.dir,"DESeq2_results.txt"))
+
+# Then we plot the gene frequencies by p-values
+hist(res.DESeq2$padj, breaks=20, col="grey", main="Wald test for negative binomial fitting", xlab="DESeq2 P-value", ylab="Number of genes")
+
+```
+
+Barplot of DESeq2 results indicates that only a small number of genes are differentially expressed.
+```{r echo=FALSE, message=FALSE, warning=FALSE, paged.print=FALSE}
+# We draw a MA plot that allows to observe distribution of fold changes
+plotMA(res.DESeq2, colNonSig = "blue")
+```
+
+MA plot of results indicates that DE genes can be divided in upregulated and downregulated genes with respectively 25 and -25 average log2(Fold change) for a very strict FDR (0.01%).
+
+```{r echo=FALSE, message=FALSE, warning=FALSE, paged.print=FALSE}
+get.most_DE <- function(ind.sign)
+{
+
+# We select the most DE gene 
+gn.most.diff.val <- counts(dds.norm, normalized=T)[ind.sign,]
+difff<-data.frame(counts(dds.norm, normalized=T))
+colnames(difff)<-labels[2:length(labels)]
+mart <- useMart(biomart="ensembl", dataset="hsapiens_gene_ensembl")
+sign.sym <- getBM(attributes=c("hgnc_symbol"), values=ind.sign, mart=mart,filters = "ensembl_gene_id_version")
+
+# And display its differential expression among sample
+barplot(gn.most.diff.val, col=pheno.data$color, main=paste("Most DE gene : ",sign.sym$hgnc_symbol), las=2, cex.names=0.5,xlab="Value difference",ylab="Samples",horiz=TRUE)
+}
+
+
+# Select the mosts induced and repressed genes in responders
+remove(most.induced.sign,most.repressed.sign)
+most.induced.sign <- rownames(res.DESeq2)[res.DESeq2$log2FoldChange >= 2 ][1]
+most.repressed.sign <- rownames(res.DESeq2)[res.DESeq2$log2FoldChange <= 2 ][15]
+
+# And get counts value for most induced and most repressed genes amond samples
+
+get.most_DE(most.induced.sign)
+get.most_DE(most.repressed.sign)
+
+```
+
+Interestingly, above results show that proteins associated with both phenotypes are DE. As an example, TREM2 proteins (Triggering receptor expressed on myeloid cells 2) are associated with differentiated myeloid cells [2]. Here, it appears that TREM2 is upregulated in responders. Conversely, REG1A known as " islet of Langerhans regenerating protein" has been shown to be associated with islet of Langerhans regeneration and diabetogenesis [3]. Here, it appear to be upregulated in non responders.
+
+
+# Hierarchical clustering after gene selection
+
+
+Even important information could be retrieved by investigating most DE genes, an another approach is about identifying genomic signatures associated with response to decitabine.
+
+
+```{r}
+## We select DE genes
+gene.kept <- rownames(res.DESeq2)[res.DESeq2$padj <= alpha & !is.na(res.DESeq2$padj)]
+
+# And update the dataframe
+data <-subset(data, data$`Genes/Samples` %in% gene.kept)
+
+## We retrieve the normalized counts for gene of interest
+count.table.kept <- log2(data[2:length(data)] + epsilon)
+
+
+## Finally, we perform the hierarchical clustering with
+## A distance based on Pearson-correlation coefficient
+## and average linkage clustering as agglomeration criteria
+
+
+heatmap.2(as.matrix(count.table.kept), 
+          scale="row", 
+          hclust=function(x) hclust(x,method="average"), 
+          distfun=function(x) as.dist((1-cor(t(x)))/2), 
+          trace="none", 
+          density="none", 
+          labRow="",
+          cexCol=0.7)
+```
+
+Hierarchical clustering performed on filtered data shows a clear separation of responders and non responders with 100% accuracy for a high cutt-of. These results supports those from Meldi & Al publication. 
+
+# Functional enrichment analysis 
+
+
+The aim of this part is about identifying annotation terms associated to our DE genes by querying a human annotation database.
+
+```{r echo=FALSE, message=FALSE, warning=FALSE, paged.print=FALSE}
+
+# First, we make sure that no NA values are present in the DGEA results
+res.DESeq2 <- na.omit(data.frame(res.DESeq2))
+
+# We pull Ensembl gene ids
+induced.sign <- rownames(res.DESeq2)[res.DESeq2$log2FoldChange >= 2 &  res.DESeq2$padj < alpha]
+
+
+# Then, we convert hgnc symbols using biomart for functionnal profilling
+mart <- useMart(biomart="ensembl", dataset="hsapiens_gene_ensembl")
+sign.syn <- getBM(attributes=c("uniprotswissprot", "hgnc_symbol"), values=induced.sign, mart=mart)
+# Finally we proceed to functional profilling with FDR as MC
+func.enrich <- gprofiler(sign.syn$hgnc_symbol, organism = "hsapiens",
+    hier_filtering="strong",
+    correction_method="fdr",max_p_value =0.001)
+
+# We order the results by increasing p-values
+func.enrich <- func.enrich[order(func.enrich$p.value),]
+
+# And write a table
+func_enrich.txt <- knitr::kable(func.enrich[1:10,c("term.name",
+                      "term.size",
+                      "query.size",
+                      "overlap.size",
+                      "recall",
+                      "precision",
+                      "p.value", 
+                      "intersection")], 
+      format.args=c(engeneer=TRUE, digits=3), caption="**Table: functional analysis with gProfileR. ** ")
+write(func_enrich.txt,file.path(tables.dir,"func_enrich.txt"))
+# We plot the results
+func.plot<-data.frame(cbind(terms = func.enrich$term.name, domain = func.enrich$domain, pvalue = func.enrich$p.value))[1:30,]
+func.plot <- func.plot[order(func.plot$pvalue),]
+col.domain <- c("CC"="blue","BP"="steelblue","MF"="green","tf"="red")
+func.plot$color <- col.domain[as.vector(func.plot$domain)]
+ggplot(data=as.data.frame(func.plot$pvalue), aes(x=func.plot$terms, y=func.plot$pvalue)) + geom_bar(stat="identity",color="steelblue",fill=func.plot$color)+ggtitle("Functional enrichement analysis")+coord_flip()+ylab("pvalues")+xlab("Functional annotations")
+
+
+
+```
+
+
+Results from functional enrichement analysis of upregulated genes in responders (> log2(fold change) show a high enrichment of transcription factors. This first observation is consistent with observation made on decibatine treated patient such as higher chromatin accessibility inherant to hypomethylation. Among them, E2F factors have shown to be associated with control of the cell cycle and tumor suppression [4]. In addtion, AP-2 and SP-X transcription factors have been shown to be associated with cell differentiation [5]. These results are consistent with expected results from decitabine treatments.
+
+
+# Evaluation drugs that could improve decitabine response
+
+
+
+According to previous results, non responders to decitabine treatment have been shown to display a specific genetic signature. An interesting way to improve patients responses is about finding compounds that may negatively regulate DE in non responders patients. For this, 37 compound specific target geneset will be tested for association with DE genes in on responders.
+
+
+```{r echo=FALSE, message=FALSE, warning=FALSE, paged.print=FALSE}
+# Download data files from the URL
+geneset.url <- "https://raw.githubusercontent.com/dputhier/SAOD---Statistical-analysis-of-omics-data/gh-pages/examens/2018_stat3/drug_gene_sets.txt"
+geneset.path <- file.path(data.dir,"Geneset.txt")
+download.file(geneset.url,destfile =geneset.path)
+
+# Then we read each lines of the Phenotype file 
+geneset <- readLines(con=geneset.path)
+
+# We create a dataframe that contain genesets
+df <- data.frame(do.call(rbind, strsplit(geneset[2:length(geneset)], split="\t")))
+colnames(df)<-c("Compound","Genes")
+
+# We define a function that return the ith geneset
+get.geneset <- function(index)
+{
+  a <- df$Genes[index]
+  b <- data.frame(strsplit(as.character(a),split=","))
+  c <- cbind(df$Compound[index],data.frame(t(b)))
+  d <- c(t(c)[1:nrow(t(c))])
+
+  return (d)
+}
+# Using DESeq2 results, we pull DE genes in non responder 
+upreg.NR <- res.DESeq2[which(res.DESeq2$log2FoldChange <= 2) ,]
+downreg.NR <- res.DESeq2[which(res.DESeq2$log2FoldChange >= 2),]
+
+# We convert ensembl ids in hgnc
+mart <- useMart(biomart="ensembl", dataset="hsapiens_gene_ensembl")
+v.up.syn <- rownames(setdiff.Vector(upreg.NR,downreg.NR))
+v.down.syn <- rownames(setdiff.Vector(downreg.NR,upreg.NR))
+up.syn <- getBM(attributes=c("hgnc_symbol"), values=rownames(upreg.NR), mart=mart,filters = "ensembl_gene_id_version")
+down.syn <- getBM(attributes=c("hgnc_symbol"), values=rownames(downreg.NR), mart=mart,filters = "ensembl_gene_id_version")
+
+# And create vectors to store compound names and chi squared p-values
+chi2.res <- c()
+compound.res <- c()
+
+# Finnaly
+# For each compound
+for(i in 1:length(geneset))
+{
+geneset.c <- data.frame(get.geneset(i))
+
+# We calculate intersections between up-regulated, down-regulated and compound genesets
+common.ur <- intersect(up.syn$hgnc_symbol,geneset.c$get.geneset.i.)  
+common.dr <- intersect(down.syn$hgnc_symbol,geneset.c$get.geneset.i.)  
+geneset_members.ur <- up.syn[common.ur,] 
+geneset_members.dr <- down.syn[common.dr,]
+compound.res<-c(compound.res,geneset.c[1,])
+
+# And compute the values for the contingency table
+x1 <- length(geneset_members.ur)
+x2 <- length(geneset_members.dr)
+y1 <- dim(upreg.NR)[1]-x1
+y2 <- dim(downreg.NR)[1]-x2
+
+contingency.table <- data.frame(matrix(nrow=2, ncol=2))
+rownames(contingency.table) <- c("Up-regulated", "Down-regulated")
+colnames(contingency.table) <- c("Geneset member", "Non geneset member")
+
+# And create the squared table
+
+contingency.table["Up-regulated", "Geneset member"] <- x1 ## Number of marked genes in the selection
+contingency.table["Down-regulated", "Geneset member"] <- x2 ## Number of non-marked genes in the selection
+contingency.table["Up-regulated", "Non geneset member"] <- y1 ## Number of marked genes outside of the selection
+contingency.table["Down-regulated", "Non geneset member"] <- y2 ## Number of non-marked genes in the selection
+
+res_test <- chisq.test(contingency.table, correct=FALSE) # t = 2*2 => 1 DF
+chi2.res<-(c(chi2.res,res_test$p.value)) 
+
+}
+
+table.res <- data.frame(Compound=df$Compound,p.value=na.omit(chi2.res))
+table.res <- table.res[order(table.res$p.value),]
+table.results <- knitr::kable(table.res)
+kable(table.res)
+write(table.results,file.path(tables.dir,"Chi2_test.txt"))
+
+```
+
+Using an exact Fisher test, for alpha = 1%, two compounds appear to be significantly associated with upregulated genes in non responders. Among them, the cucurbitacin I presents a very low p-value. These results are consistent with previous studies describing compounds of this family as natural potent targets for cancer therapy.
+
+# Discussion 
+
+
+Using the same datasets than Meldi & Al paper, we were able to retrieve gene expression characteristics associated with response to decitabine treatment. Even if the dataset was slighlty imbalanced and zero inflated, data normalization using the median of ratio method provided by the DESeq2 library following by gene selection allowed us to perfectly retrieve the experimental design using unsupervised hierarchical clustering. Theses results were very interesting by the fact that we were able to identify a genomic signature for both responders and non responders. In addition, functional profilling of differentially expressed genes allowed us to identify biological markers associated with both phenotype. Particularly, DE genes were strongly enriched with transcription factors. This observation is consistent with hypermethylation observed in affected patients, decreasing chromatin access. Surprisingly, no proteins with methyltransferase activity were found in top DE genes. However, hits were enriched with transcription factors associated with proliferation and differentiation, indicating that these biological processes are strongly associated with response to the treatment. For the final part of this study, we tried to identify drug targets that may improve responses to decitabine by negatively regulating upregulated genes in non responders. Among the 37 candidates, 2 compounds (cucurbitacin I and JTE 0.13) have been shown a p-value < 1% for an exact fisher test, indicating that it could be interesting candidates for further investigation.
+
+# References
+
+
+1. Meldi K, Qin T, Buchi F, Droin N, Sotzen J, Micol JB, et al. Specific molecular signatures predict decitabine response in chronic myelomonocytic leukemia. J Clin Invest. 2015;125:1857-72.
+
+2. https://www.ncbi.nlm.nih.gov/gene/54209
+
+3. https://en.wikipedia.org/wiki/REG1A
+
+4. Evangelou, Konstantinos et al. "E2F transcription factors and digestive system malignancies: how much do we know?" World journal of gastroenterology vol. 20,29 (2014): 10212-6. 
+
+5. A	Eckert, Dawid et al. "The AP-2 family of transcription factors" Genome biology vol. 6,13 (2005): 246. 
+
+6. Alghasham, Abdullah A. "Cucurbitacins - a promising target for cancer therapy" International journal of health sciences vol. 7,1 (2013): 77-89. 
+
